@@ -33,7 +33,7 @@
         <build.build-helper-maven-plugin>3.6.1</build.build-helper-maven-plugin>
         <build.buildnumber-maven-plugin>3.2.1</build.buildnumber-maven-plugin>
         <build.exec-maven-plugin>3.6.2</build.exec-maven-plugin>
-        <build.hugo-maven-plugin>0.2.20</build.hugo-maven-plugin>
+        <build.hugo-maven-plugin>0.2.12</build.hugo-maven-plugin>
         <build.jandex-maven-plugin>3.1.6</build.jandex-maven-plugin>
         <build.maven-compiler-plugin>3.14.0</build.maven-compiler-plugin>
         <build.maven-enforcer-plugin>3.6.2</build.maven-enforcer-plugin>
@@ -55,6 +55,7 @@
         <h5m.benchmark.warmup>5</h5m.benchmark.warmup>
 
         <h5m.cli.native>true</h5m.cli.native>
+        <h5m.skip.hugo>false</h5m.skip.hugo>
 
         <!-- dependencies -->
         <lib.jdbi>3.41.3</lib.jdbi>
@@ -63,6 +64,8 @@
         <lib.jmh>1.37</lib.jmh>
         <lib.mapstruct>1.6.3</lib.mapstruct>
         <lib.math3>3.6.1</lib.math3>
+
+        <lib.playwright>1.51.0</lib.playwright>
         <lib.yaup>0.9.11</lib.yaup>
 
         <!-- compiler -->
@@ -260,6 +263,12 @@
             <artifactId>nativeimage</artifactId>
             <version>${quarkus.graalvm.version}</version>
             <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.microsoft.playwright</groupId>
+            <artifactId>playwright</artifactId>
+            <version>${lib.playwright}</version>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
@@ -669,6 +678,18 @@
                             </execution>
                         </executions>
                     </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>docs</id>
+            <activation>
+                <property>
+                    <name>!skip.hugo</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
                     <plugin>
                         <groupId>org.codehaus.mojo</groupId>
                         <artifactId>exec-maven-plugin</artifactId>
@@ -708,6 +729,39 @@
                                 </configuration>
                             </execution>
                         </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>playwright</id>
+            <activation>
+                <property>
+                    <name>playwright</name>
+                </property>
+            </activation>
+            <properties>
+                <!-- run ITs when this profile is active -->
+                <skipITs>false</skipITs>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <version>${build.maven-failsafe-plugin}</version>
+                        <configuration>
+                            <includes>
+                                <include>**/*PlaywrightIT.java</include>
+                            </includes>
+                            <systemPropertyVariables>
+                                <playwright.baseUrl>${playwright.baseUrl}</playwright.baseUrl>
+                                <playwright.headless>${playwright.headless}</playwright.headless>
+                                <playwright.slowMo>${playwright.slowMo}</playwright.slowMo>
+                                <playwright.keepFolders>${playwright.keepFolders}</playwright.keepFolders>
+                                <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
+                            </systemPropertyVariables>
+                        </configuration>
                     </plugin>
                 </plugins>
             </build>
