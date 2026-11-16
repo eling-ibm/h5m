@@ -1,25 +1,32 @@
 package io.hyperfoil.tools.h5m.svc;
 
+import io.hyperfoil.tools.h5m.api.Folder;
 import io.hyperfoil.tools.jjq.value.*;
 import io.hyperfoil.tools.h5m.api.EphemeralMode;
+import io.hyperfoil.tools.h5m.api.NodeType;
+import io.hyperfoil.tools.h5m.api.node.FixedThresholdConfig;
 import io.hyperfoil.tools.h5m.FreshDb;
 import io.hyperfoil.tools.h5m.entity.FolderEntity;
 import io.hyperfoil.tools.h5m.entity.NodeEntity;
 import io.hyperfoil.tools.h5m.entity.NodeGroupEntity;
-import io.hyperfoil.tools.h5m.entity.NotificationConfig;
-import io.hyperfoil.tools.h5m.entity.NotificationLog;
+import io.hyperfoil.tools.h5m.entity.NotificationChannelEntity;
+import io.hyperfoil.tools.h5m.entity.NotificationEntity;
 import io.hyperfoil.tools.h5m.entity.ProcessingEntity;
+import io.hyperfoil.tools.h5m.entity.TeamEntity;
 
 import io.hyperfoil.tools.h5m.entity.ValueEntity;
 import io.hyperfoil.tools.h5m.entity.node.JqNode;
-import io.hyperfoil.tools.h5m.notification.NotificationMethod;
+import io.hyperfoil.tools.h5m.api.Notification;
+import io.hyperfoil.tools.h5m.api.NotificationMethod;
+import io.hyperfoil.tools.h5m.api.FolderSummary;
+import io.hyperfoil.tools.h5m.api.notification.WebhookConfig;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.TransactionManager;
+import jakarta.ws.rs.NotFoundException;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -45,6 +52,9 @@ public class FolderServiceTest extends FreshDb {
 
     @Inject
     ValueService valueService;
+
+    @Inject
+    NodeService nodeService;
 
     private void awaitIdle(long timeoutMs) throws InterruptedException {
         long deadline = System.currentTimeMillis() + timeoutMs;
@@ -460,15 +470,16 @@ public class FolderServiceTest extends FreshDb {
         long nodeId = nodeA.id;
 
 
-        NotificationConfig config = new NotificationConfig(folder, NotificationMethod.WEBHOOK, "{\"url\": \"http://example.com\"}");
+        NotificationChannelEntity config = new NotificationChannelEntity(folder, NotificationMethod.WEBHOOK,
+                WebhookConfig.of("http://example.com"));
         config.persist();
         long configId = config.id;
 
-        NotificationLog log = new NotificationLog();
+        NotificationEntity log = new NotificationEntity();
         log.folder = folder;
-        log.method = "webhook";
-        log.destination = "http://example.com";
-        log.status = "sent";
+        log.method = NotificationMethod.WEBHOOK;
+        log.channel = config;
+        log.status = Notification.Status.SENT;
         log.nodeId = 1L;
         log.nodeName = "test-node";
         log.changeCount = 1;
@@ -484,9 +495,106 @@ public class FolderServiceTest extends FreshDb {
         tm.begin();
         assertNull(FolderEntity.find("name", "delete-upload-test").firstResult(), "Folder should not exist after deletion");
         assertNotNull(NodeGroupEntity.findById(groupId), "Node group should still exist after folder deletion");
-        assertNull(NotificationConfig.findById(configId), "Notification config should be deleted ");
-        assertNull(NotificationLog.findById(logId), "Notification log should be deleted");
+        assertNull(NotificationChannelEntity.findById(configId), "Notification config should be deleted ");
+        assertNull(NotificationEntity.findById(logId), "Notification log should be deleted");
         assertNotNull(NodeEntity.findById(nodeId), "Node should not be deleted");
+        tm.commit();
+    }
+
+    // -- Team association --
+
+    @Test
+    public void create_folder_with_team() throws Exception {
+        tm.begin();
+        TeamEntity team = new TeamEntity("team-alpha");
+        team.persist();
+        long teamId = team.id;
+        tm.commit();
+
+        Folder folder = folderService.create("folder-with-team", teamId);
+
+        assertEquals(teamId, folder.teamId(), "teamId should match the associated team");
+        assertEquals("team-alpha", folder.teamName(), "teamName should match the associated team");
+    }
+
+    @Test
+    public void create_folder_without_team() throws Exception {
+        Folder folder = folderService.create("folder-without-team");
+
+        assertNull(folder.teamId(), "teamId should be null when no team is associated");
+        assertNull(folder.teamName(), "teamName should be null when no team is associated");
+    }
+
+    @Test
+    public void create_folder_with_nonexistent_team() throws Exception {
+        assertThrows(NotFoundException.class,
+                () -> folderService.create("folder-bad-team", 999999L),
+                "Creating a folder with a non-existent team should throw NotFoundException");
+    }
+
+    @Test
+    public void dashboard_summary_includes_team_id() throws Exception {
+        tm.begin();
+        TeamEntity team = new TeamEntity("team-dashboard-test");
+        team.persist();
+        long teamId = team.id;
+        tm.commit();
+
+        folderService.create("dashboard-team-folder", teamId);
+        folderService.create("dashboard-no-team-folder");
+
+        List<FolderSummary> summaries = folderService.getDashboardSummaries();
+
+        FolderSummary teamFolder = summaries.stream()
+                .filter(s -> s.name().equals("dashboard-team-folder")).findFirst().orElseThrow();
+        FolderSummary noTeamFolder = summaries.stream()
+                .filter(s -> s.name().equals("dashboard-no-team-folder")).findFirst().orElseThrow();
+
+        assertEquals(teamId, teamFolder.teamId(), "Dashboard summary should carry the folder's team id");
+        assertNull(noTeamFolder.teamId(), "Unteamed folders should report a null team id");
+    }
+
+    @Test
+    public void delete_folder_with_change_detection() throws Exception {
+        tm.begin();
+        long folderId = folderService.create("delete-detection-test").id();
+        tm.commit();
+
+        tm.begin();
+        FolderEntity folder = FolderEntity.find("name", "delete-detection-test").firstResult();
+        long groupId = folder.group.id;
+
+        JqNode rangeNode = new JqNode("range", ".y", folder.group.root);
+        rangeNode.group = folder.group;
+        rangeNode.persist();
+        long rangeId = rangeNode.id;
+
+        JqNode fpSource = new JqNode("fpSource", ".fp", folder.group.root);
+        fpSource.group = folder.group;
+        fpSource.persist();
+        long fpSourceId = fpSource.id;
+        tm.commit();
+
+        Long fpNodeId = nodeService.createConfigured("_fp", groupId,
+                NodeType.FINGERPRINT, List.of(fpSourceId), null).id();
+        Long ftNodeId = nodeService.createConfigured("ft", groupId,
+                NodeType.FIXED_THRESHOLD,
+                List.of(fpNodeId, folder.group.root.id, rangeId),
+                new FixedThresholdConfig(null, 50.0, false, true, null)).id();
+
+        processingService.awaitIngestion(valueService.createRootValue(folderId,
+                JqValues.parse("{\"y\": 100, \"fp\": \"default\"}")), 30, TimeUnit.SECONDS);
+
+        awaitIdle(10_000);
+        folderService.delete(folderId);
+
+        tm.begin();
+        assertNull(FolderEntity.find("name", "delete-detection-test").firstResult(), "Folder should be deleted after deletion");
+        assertNotNull(NodeGroupEntity.findById(groupId), "Node group should not be deleted after folder deletion");
+        assertNotNull(NodeEntity.findById(rangeId), "Range node should not be deleted");
+        assertNotNull(NodeEntity.findById(fpSourceId), "Fingerprint source node should not be deleted");
+        assertNotNull(NodeEntity.findById(fpNodeId), "Fingerprint node should not be deleted");
+        assertNotNull(NodeEntity.findById(ftNodeId), "Detection node should not be deleted");
         tm.commit();
     }
 }

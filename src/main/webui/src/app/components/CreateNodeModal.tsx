@@ -21,11 +21,11 @@ import {
   TextArea,
   TextInput,
 } from '@carbon/react';
-import { byIdOptions, createConfiguredMutation, createNodeMutation } from '@client/@tanstack/react-query.gen.ts';
+import { byIdOptions, byIdQueryKey, createConfiguredMutation, createNodeMutation } from '@client/@tanstack/react-query.gen.ts';
 import { zCreateNodeBody } from '@client/zod.gen.ts';
 import { useForm, useSelector } from '@tanstack/react-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { z } from 'zod';
 
 import { DETECTION_SOURCES, DetectionConfigStep, buildConfig } from './DetectionConfigStep';
@@ -34,6 +34,7 @@ interface CreateNodeModalProps {
   open: boolean;
   onClose: () => void;
   groupId: number;
+  initialSourceId?: string;
 }
 
 type StepKey = 'type' | 'sources' | 'operation' | 'detection';
@@ -116,7 +117,7 @@ const DEFAULT_VALUES: FormValues = {
   edConfig: { windowLen: 50, maxPvalue: 0.001, minMagnitude: 0.0, maxSeriesLength: 500, fingerprintFilter: '' },
 };
 
-export const CreateNodeModal = ({ open, onClose, groupId }: CreateNodeModalProps) => {
+export const CreateNodeModal = ({ open, onClose, groupId, initialSourceId }: CreateNodeModalProps) => {
   const [currentStep, setCurrentStep] = useState(0);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const queryClient = useQueryClient();
@@ -130,7 +131,7 @@ export const CreateNodeModal = ({ open, onClose, groupId }: CreateNodeModalProps
   const availableNodes: ApiNode[] = [...(nodeGroup?.root ? [nodeGroup.root] : []), ...(nodeGroup?.sources ?? [])];
 
   const onSuccess = () => {
-    void queryClient.invalidateQueries();
+    void queryClient.invalidateQueries({ queryKey: byIdQueryKey({ path: { id: groupId } }) });
     notifications.success('Node created');
     handleClose();
   };
@@ -189,6 +190,13 @@ export const CreateNodeModal = ({ open, onClose, groupId }: CreateNodeModalProps
       form.setFieldValue('operation', names.length > 0 ? `{${names.join(',')}}:${stripped}` : stripped);
     }
   };
+
+  useEffect(() => {
+    if (!open || !initialSourceId || !nodeGroup) return;
+    form.setFieldValue('sources', [initialSourceId]);
+    const selected = availableNodes.find((n) => String(n.id) === initialSourceId);
+    if (selected?.name) setSourcePrefix([selected.name]);
+  }, [open, initialSourceId, nodeGroup]);
 
   const handleSourceSelect = (nodeId: string) => {
     form.setFieldValue('sources', nodeId ? [nodeId] : []);
@@ -298,7 +306,7 @@ export const CreateNodeModal = ({ open, onClose, groupId }: CreateNodeModalProps
                     {(field) => {
                       const sourceItems = availableNodes
                         .filter((n) => n.type !== 'ROOT')
-                        .map((n) => ({ id: String(n.id), label: `${n.name ?? '?'} (${n.type ?? '?'})`, name: n.name ?? '' }));
+                        .map((n) => ({ id: String(n.id), label: `${n.name} (${n.type})`, name: n.name}));
                       return (
                         <MultiSelect
                           key={nodeType}
@@ -334,7 +342,7 @@ export const CreateNodeModal = ({ open, onClose, groupId }: CreateNodeModalProps
                       >
                         <SelectItem value="" text="Root (no parent source)" />
                         {availableNodes.map((n) => (
-                          <SelectItem key={n.id} value={String(n.id)} text={`${n.name ?? '?'} (${n.type ?? '?'})`} />
+                          <SelectItem key={n.id} value={String(n.id)} text={`${n.name} (${n.type})`} />
                         ))}
                       </Select>
                     )}
@@ -355,7 +363,7 @@ export const CreateNodeModal = ({ open, onClose, groupId }: CreateNodeModalProps
                         disabled={nodesLoading}
                         items={availableNodes
                           .filter((n): n is ApiNode & { id: number } => n.id !== undefined)
-                          .map((n) => ({ id: String(n.id), label: `${n.name ?? '?'} (${n.type ?? '?'})`, nodeId: n.id }))}
+                          .map((n) => ({ id: String(n.id), label: `${n.name} (${n.type})`, nodeId: n.id }))}
                         itemToString={(item) => item.label}
                         invalid={field.state.meta.errors.length > 0}
                         invalidText={fieldError(field.state.meta.errors)}
@@ -385,9 +393,9 @@ export const CreateNodeModal = ({ open, onClose, groupId }: CreateNodeModalProps
                           >
                             <SelectItem value="" text={`Select ${src.label.toLowerCase()}`} />
                             {availableNodes
-                              .filter((n) => n.type && src.allowedTypes.includes(n.type))
+                              .filter((n) => src.allowedTypes.includes(n.type))
                               .map((n) => (
-                                <SelectItem key={n.id} value={String(n.id)} text={`${n.name ?? '?'} (${n.type ?? '?'})`} />
+                                <SelectItem key={n.id} value={String(n.id)} text={`${n.name} (${n.type})`} />
                               ))}
                           </Select>
                         )}
@@ -407,9 +415,9 @@ export const CreateNodeModal = ({ open, onClose, groupId }: CreateNodeModalProps
                           >
                             <SelectItem value="" text="None" />
                             {availableNodes
-                              .filter((n) => n.type && NODE_TYPES.filter((type) => type.category == 'Extraction').find((type) => type.value === n.type))
+                              .filter((n) => NODE_TYPES.filter((type) => type.category == 'Extraction').find((type) => type.value === n.type))
                               .map((n) => (
-                                <SelectItem key={n.id} value={String(n.id)} text={`${n.name ?? '?'} (${n.type ?? '?'})`} />
+                                <SelectItem key={n.id} value={String(n.id)} text={`${n.name} (${n.type})`} />
                               ))}
                           </Select>
                         )}

@@ -13,16 +13,14 @@ import io.hyperfoil.tools.h5m.entity.work.Work;
 import io.hyperfoil.tools.h5m.entity.mapper.CycleAvoidingContext;
 import io.hyperfoil.tools.h5m.entity.node.RootNode;
 import io.hyperfoil.tools.h5m.queue.KahnDagSort;
-import io.quarkus.hibernate.orm.panache.PanacheEntityBase;
+import io.hyperfoil.tools.yaup.HashedLists;
 import jakarta.enterprise.context.ApplicationScoped;
-import io.hyperfoil.tools.h5m.api.Change;
-import io.hyperfoil.tools.h5m.event.ChangeDetectedEvent;
+import io.hyperfoil.tools.h5m.event.ChangeEvent;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import io.hyperfoil.tools.h5m.provided.DatabaseEngine;
-import static io.hyperfoil.tools.h5m.provided.DatabaseEngine.Kind.*;
 import jakarta.ws.rs.NotFoundException;
 import org.hibernate.Session;
 import org.hibernate.query.NativeQuery;
@@ -34,7 +32,6 @@ import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 @ApplicationScoped
 public class ValueService implements ValueServiceInterface {
@@ -56,7 +53,7 @@ public class ValueService implements ValueServiceInterface {
 
     // ---- Detection value cache ----
     // In-memory cache of detection values keyed by root value ID (upload ID).
-    // Populated by the ChangeDetectedEvent observer as detection nodes produce values.
+    // Populated by the ChangeEvent observer as detection nodes produce values.
     // Used by getDetectionDescendants() as a fast path before falling back to DB query.
     private static final long DETECTION_CACHE_RETENTION_MS = 10 * 60 * 1000; // 10 minutes
     private static final int DETECTION_CACHE_MAX_ENTRIES = 1000;
@@ -68,7 +65,7 @@ public class ValueService implements ValueServiceInterface {
      * Observes change detection events and caches the detection values
      * by root value ID for fast retrieval via the REST API.
      */
-    void onChangeDetected(@Observes ChangeDetectedEvent event) {
+    void onChangeDetected(@Observes ChangeEvent event) {
         if (event.rootValueId() < 0) return;
         long rootId = event.rootValueId();
         CycleAvoidingContext ctx = new CycleAvoidingContext();
@@ -202,6 +199,8 @@ public class ValueService implements ValueServiceInterface {
         // Bulk delete - no parent count checks needed since entire folder is going away
         em.createNativeQuery("DELETE FROM value_edge WHERE child_id IN (SELECT id FROM value WHERE folder_id = :fid)")
                 .setParameter("fid", folderId).executeUpdate();
+        em.createNativeQuery("DELETE FROM value_edge WHERE parent_id IN (SELECT id FROM value WHERE folder_id = :fid)")
+                .setParameter("fid", folderId).executeUpdate();
         em.createNativeQuery("DELETE FROM value WHERE folder_id = :fid")
                 .setParameter("fid", folderId).executeUpdate();
     }
@@ -210,6 +209,11 @@ public class ValueService implements ValueServiceInterface {
     @Transactional
     public ValueEntity byId(Long id){
         return ValueEntity.findById(id);
+    }
+    @Transactional
+    public Value get(Long id){
+        CycleAvoidingContext ctx = new CycleAvoidingContext();
+        return apiMapper.toValue(byId(id), ctx);
     }
 
     /**
@@ -271,76 +275,6 @@ public class ValueService implements ValueServiceInterface {
         source = NodeEntity.findById(source.id);
         return findMatchingFingerprint(source,source.group.root,fingerprint,null,null,-1,-1,true);
     }
-    /*
-     * Finds the values for a relative node Source where a descendant created the expected fingerprint value, now it works on siblings and cousins
-     * we want this to also find sibling and cousin values but that probably requires another traversal
-     * sorting by a value is useful if that value is our timestamp but we also need that value
-     */
-    @Transactional
-    public List<ValueEntity> findMatchingFingerprint_unused(NodeEntity source, ValueEntity fingerprint, NodeEntity sort){
-        List<ValueEntity> rtrn = new ArrayList<>(em.createNativeQuery(
-            switch(db.kind()){
-                case POSTGRESQL->
-                    """
-                    with recursive ancestor(vid) as (
-                        select v.id as vid 
-                            from value v where v.node_id = :nodeId and v.data = :data
-                        union 
-                        select v.id as vid 
-                            from value v join value_edge ve on v.id = ve.parent_id join ancestor a on a.vid = ve.child_id
-                    ),
-                    sorter(vid,sortable) as (
-                        select v.id as vid,convert_from(v.data, 'UTF-8')::jsonb as sortable 
-                            from value v where v.node_id = :sortId
-                        union
-                        select v.id as vid, s.sortable as sortable
-                            from value v join value_edge ve on v.id = ve.parent_id join sorter s on s.vid = ve.child_id
-                    ),
-                    descendant(vid,sortable) as (
-                       select v.id as vid, s.sortable as sortable
-                         from value v join sorter s on v.id = s.vid join ancestor a on v.id = a.vid join node n on n.id = v.node_id where n.type = 'root'
-                       union
-                       select v.id as vid, d.sortable as sortable
-                             from value v join value_edge ve on v.id = ve.child_id join descendant d on d.vid = ve.parent_id
-                    )                        
-                    select * from value v join descendant d on v.id=d.vid where v.node_id=:sourceId order by sortable asc;                    
-                    """;
-                case SQLITE->
-                    """
-                    with recursive ancestor(vid) as (
-                        select v.id as vid 
-                            from value v where v.node_id = :nodeId and v.data = :data
-                        union 
-                        select v.id as vid 
-                            from value v join value_edge ve on v.id = ve.parent_id join ancestor a on a.vid = ve.child_id
-                    ),
-                    sorter(vid,sortable) as (
-                        select v.id as vid,json_extract(CAST(v.data AS TEXT), '$') as sortable 
-                            from value v where v.node_id = :sortId
-                        union
-                        select v.id as vid, s.sortable as sortable
-                            from value v join value_edge ve on v.id = ve.parent_id join sorter s on s.vid = ve.child_id
-                    ),
-                    descendant(vid,sortable) as (
-                       select v.id as vid, s.sortable as sortable
-                         from value v join sorter s on v.id = s.vid join ancestor a on v.id = a.vid join node n on n.id = v.node_id where n.type = 'root'
-                       union
-                       select v.id as vid, d.sortable as sortable
-                             from value v join value_edge ve on v.id = ve.child_id join descendant d on d.vid = ve.parent_id
-                    )                        
-                    select * from value v join descendant d on v.id=d.vid where v.node_id=:sourceId order by sortable asc;
-                    """;
-            }, ValueEntity.class)
-                                                   .setParameter("nodeId", fingerprint.node.id)
-                                                   .setParameter("data", JqValues.serializeToBytes(fingerprint.data))
-                                                   .setParameter("sourceId", source.id)
-                                                   .setParameter("sortId",sort.id)
-                                                   .getResultList());
-        return rtrn;
-    }
-
-    //
-
     //this is to support getting the necessary values for change detection across all values
     @Transactional
     public List<ValueEntity> findMatchingFingerprint(NodeEntity source, ValueEntity fingerprint, NodeEntity sort){
@@ -355,7 +289,165 @@ public class ValueService implements ValueServiceInterface {
     public List<ValueEntity> findMatchingFingerprint(NodeEntity rangeNode, NodeEntity groupBy, ValueEntity fingerprint, NodeEntity domainNode, ValueEntity domainValue,int limit,int offset,boolean preceedingValues){
         return findMatchingFingerprint(rangeNode,groupBy,fingerprint,domainNode,domainValue,null,limit,offset,preceedingValues);
     }
+    public record ValuePair(ValueEntity domain,ValueEntity range){}
+    public record GroupRangeValue(long groupId,long domainId,long rangeId, JqValue rangeValue){}
 
+
+    public HashedLists<JqValue,GroupRangeValue> getRangeValueForDistinctDomainValues(long rangeNodeId, long domainNodeId, JqValue minDomainValue,JqValue maxDomainValue, long fingerprintId, JqValue fingerprintValue, long groupNodeId){
+        HashedLists<JqValue,GroupRangeValue> rtrn = new HashedLists<>();
+
+        String sql = """
+            with recursive fingerprint_ancestors(vid,nid) as (
+            select v.id as vid, v.node_id as nid
+            from value v where v.node_id = :fingerprintId and v.data = :fingerprintValue
+            union
+            select v.id as vid, v.node_id as nid
+            from value v join value_edge ve on v.id = ve.parent_id join fingerprint_ancestors a on a.vid = ve.child_id
+            where a.nid <> :groupNodeId
+            ),
+            descendant(vid,nid,gid,data) as (
+              select fa.vid,fa.nid,fa.vid,null::jsonb from fingerprint_ancestors fa where fa.nid = :groupNodeId
+              union
+              select v.id,v.node_id,r.gid, /*START_SORTABLE_DATA*/ convert_from(v.data,'UTF-8')::jsonb /*END_SORTABLE_DATA*/ 
+              from value v join value_edge ve on v.id = ve.child_id join descendant r on r.vid = ve.parent_id
+              where r.nid <> :domainNodeId -- not sure about this where clause, might need to remove it
+            )
+            select d.data, jsonb_agg(jsonb_build_object('gid',d.gid,'did',d.vid,'rid',r.vid,'r',json(r.data))) 
+              from descendant d join descendant r on d.gid = r.gid and d.nid = :domainNodeId and r.nid = :rangeNodeId
+            where d.data >= convert_from(:minValue, 'UTF-8')::jsonb and d.data <= convert_from(:maxValue, 'UTF-8')::jsonb
+            group by d.data
+            """;
+        if(db.isSQLite()){
+            sql = sql.replace("convert_from","json").replace(", 'UTF-8')::jsonb",")").replace(",'UTF-8')::jsonb","))");
+            sql = sql.replace("jsonb_agg","json_group_array");
+            sql = sql.replace("jsonb_build_object","jsonb_object");
+            sql = sql.replace("jsonb_typeof","json_type");
+            sql = sql.replace("null::jsonb","null");
+            sql = sql.replace("where d.data","where json(d.data)").replace(" and d.data"," and json(d.data)");
+            int startIdx = sql.indexOf("START_SORTABLE_DATA*/ ")+"START_SORTABLE_DATA*/ ".length();
+            int endIdx = sql.indexOf("/*END_SORTABLE_DATA");
+            sql = sql.substring(0,startIdx)+" case when json_type(json(cast(v.data as text))) in ('integer','real') then json(cast(v.data as text))+0 else json(cast(v.data as text)) end "+sql.substring(endIdx);
+        }
+        var query = (NativeQuery<Object[]>) em.createNativeQuery(sql);
+        query
+                .setParameter("rangeNodeId", rangeNodeId)
+                .setParameter("domainNodeId", domainNodeId)
+                .setParameter("minValue", JqValues.serializeToBytes(minDomainValue))
+                .setParameter("maxValue", JqValues.serializeToBytes(maxDomainValue))
+                .setParameter("fingerprintId", fingerprintId)
+                .setParameter("fingerprintValue", JqValues.serializeToBytes(fingerprintValue))
+                .setParameter("groupNodeId", groupNodeId)
+                ;
+
+        query.getResultStream().forEach(ary->{
+            JqValue key = JqValues.parse(ary[0].toString());
+            JqValue datum = JqValues.parse(ary[1].toString());
+            datum.asList().forEach(entry->{
+                long groupId = entry.getField("gid").longValue();
+                //List<Long> domainIds = entry.getField("domainId").asList().stream().mapToLong(JqValue::longValue).boxed().toList();
+                long domainId = entry.getField("did").longValue();
+                //List<Long> rangeIds = entry.getField("rangeId").asList().stream().mapToLong(JqValue::longValue).boxed().toList();
+                long rangeId = entry.getField("rid").longValue();
+                JqValue value = entry.getField("r");
+                rtrn.put(key,new GroupRangeValue(groupId,domainId,rangeId,value));
+            });
+        });
+        return  rtrn;
+    }
+    /**
+     * get the previous count domain valueIds closest to maxDomainValue and the associated range valueIds along with the groupBy valueId.
+     * @param rangeNodeId
+     * @param domainNodeId
+     * @param domainValue
+     * @param fingerprintId
+     * @param fingerprintValue
+     * @param groupNodeId
+     * @param before
+     * @param after
+     * @return
+     */
+    public HashedLists<JqValue,GroupRangeValue> getRangeValueForDistinctDomainValues(long rangeNodeId, long domainNodeId, JqValue domainValue, long fingerprintId, JqValue fingerprintValue, long groupNodeId, int before, int after){
+        HashedLists<JqValue,GroupRangeValue> rtrn = new HashedLists<>();
+        String sql = """
+            with recursive fingerprint_ancestors(vid,nid) as (
+            select v.id as vid, v.node_id as nid
+            from value v where v.node_id = :fingerprintId and v.data = :fingerprintValue
+            union
+            select v.id as vid, v.node_id as nid
+            from value v join value_edge ve on v.id = ve.parent_id join fingerprint_ancestors a on a.vid = ve.child_id
+            where a.nid <> :groupNodeId
+            ),
+            descendant(vid,nid,gid,data) as (
+              select fa.vid,fa.nid,fa.vid,null::jsonb from fingerprint_ancestors fa where fa.nid = :groupNodeId
+              union
+              select v.id,v.node_id,r.gid, /*START_SORTABLE_DATA*/ convert_from(v.data,'UTF-8')::jsonb /*END_SORTABLE_DATA*/ 
+              from value v join value_edge ve on v.id = ve.child_id join descendant r on r.vid = ve.parent_id
+              where r.nid <> :domainNodeId -- not sure about this where clause, might need to remove it
+            ),
+            domain_grouped (domain,data) as (
+             select d.data, jsonb_agg(jsonb_build_object('gid',d.gid,'did',d.vid,'rid',r.vid,'r',r.data))  -- json(r.data)
+             from descendant d join descendant r on d.gid = r.gid and d.nid = :domainNodeId and r.nid = :rangeNodeId group by d.data
+            ),
+            after as (
+            select domain,data from domain_grouped where domain > convert_from(:domainValue,'UTF-8')::jsonb order by domain asc limit :after
+            ),
+            before as (
+            select domain,data from domain_grouped where domain <= convert_from(:domainValue,'UTF-8')::jsonb order by domain desc limit :before
+            ) select * from before union all select * from after order by domain asc
+            """;
+        if(db.isSQLite()){
+            sql = sql.replace("convert_from(","json(cast(").replace(", 'UTF-8')::jsonb"," as text))").replace(",'UTF-8')::jsonb"," as text))");
+            sql = sql.replace("jsonb_agg","json_group_array");
+            sql = sql.replace("jsonb_build_object","jsonb_object");
+            sql = sql.replace("jsonb_typeof","json_type");
+            sql = sql.replace("null::jsonb","null");
+            sql = sql.replace("where domain","where json(domain)");
+            int startIdx = sql.indexOf("START_SORTABLE_DATA*/ ")+"START_SORTABLE_DATA*/ ".length();
+            int endIdx = sql.indexOf("/*END_SORTABLE_DATA");
+            sql = sql.substring(0,startIdx)+" case when json_type(json(cast(v.data as text))) in ('integer','real') then json(cast(v.data as text))+0 else json(cast(v.data as text)) end "+sql.substring(endIdx);
+        }
+        var query = (NativeQuery<Object[]>) em.createNativeQuery(sql);
+        query
+                .setParameter("rangeNodeId", rangeNodeId)
+                .setParameter("domainNodeId", domainNodeId)
+                .setParameter("domainValue", JqValues.serializeToBytes(domainValue))
+                .setParameter("fingerprintId", fingerprintId)
+                .setParameter("fingerprintValue", JqValues.serializeToBytes(fingerprintValue))
+                .setParameter("groupNodeId", groupNodeId)
+                .setParameter("before", before+1)
+                .setParameter("after", after);
+
+
+
+        query.getResultStream().forEach(ary->{
+            JqValue key = JqValues.parse(ary[0].toString());
+            JqValue datum = JqValues.parse(ary[1].toString());
+            datum.asList().forEach(entry->{
+                long groupId = entry.getField("gid").longValue();
+                //List<Long> domainIds = entry.getField("domainId").asList().stream().mapToLong(JqValue::longValue).boxed().toList();
+                long domainId = entry.getField("did").longValue();
+                //List<Long> rangeIds = entry.getField("rangeId").asList().stream().mapToLong(JqValue::longValue).boxed().toList();
+                long rangeId = entry.getField("rid").longValue();
+                JqValue value = entry.getField("r");
+                rtrn.put(key,new GroupRangeValue(groupId,domainId,rangeId,value));
+            });
+        });
+        return rtrn;
+    }
+    /**
+     * Finds all the values from rangeNode under groupBy where there is also a value under groupBy that matches fingerprint and optionally sorted by domainNode (also a descendant of groupBy) around a starting / ending value domainValue optionally with ancestorValue as an ancestor of the range values.
+     *
+     * @param rangeNode
+     * @param groupBy
+     * @param fingerprint
+     * @param domainNode
+     * @param domainValue
+     * @param ancestorValue
+     * @param limit
+     * @param offset
+     * @param preceedingValues
+     * @return
+     */
     @Transactional
     public List<ValueEntity> findMatchingFingerprint(NodeEntity rangeNode, NodeEntity groupBy, ValueEntity fingerprint, NodeEntity domainNode, ValueEntity domainValue, ValueEntity ancestorValue,int limit,int offset,boolean preceedingValues){
 
@@ -421,11 +513,12 @@ public class ValueService implements ValueServiceInterface {
                                  from value v join value_edge ve on v.id = ve.child_id join descendant d on d.vid = ve.parent_id
                         )
                         select v.id from value v join descendant d on v.id=d.vid
-                            where v.node_id=:sourceId order by sortable ORDER_DIRECTION
+                            where v.node_id=:sourceId order by sortable ORDER_DIRECTION, created_at ORDER_DIRECTION, v.id ORDER_DIRECTION
                         """).replace("DATA_TO_SORTABLE", dataToSortable);
             sql = sql.replace("DOMAIN_VALUE_COMP",domainValue != null ? domainValueComp : "");
         }else{
-            //sorting by created_at
+            // sorting by created_at and id (which follows insertion order) to break ties and keep the window deterministic
+            // created_at is only microsecond precision and every value of an upload is persisted in one transaction, so ties are common
             // No domain sorting — order by created_at. Both dialects share the same SQL.
             sql+= """
                         descendant(vid) as (
@@ -437,11 +530,11 @@ public class ValueService implements ValueServiceInterface {
                                  from value v join value_edge ve on v.id = ve.child_id join descendant d on d.vid = ve.parent_id
                         )
                         select v.id from value v join descendant d on v.id=d.vid
-                            where v.node_id=:sourceId order by created_at ORDER_DIRECTION
+                            where v.node_id=:sourceId order by created_at ORDER_DIRECTION, v.id ORDER_DIRECTION
                         """;
         }
         sql = sql
-                .replace("GTLT", preceedingValues ? "<=" : ">=") //TODO I think these should be <= and >= to include current sample
+                .replace("GTLT", preceedingValues ? "<=" : ">=")
                 .replace("ORDER_DIRECTION", preceedingValues ? "desc" : "asc");
         if(offset > 0){
             sql+=" offset :offset";
@@ -544,6 +637,15 @@ public class ValueService implements ValueServiceInterface {
         return getGroupedValues(nodeId,null,filterNodeIds,fingerprints,sortByNodeId);
     }
 
+    /**
+     *
+     * @param nodeId ancestor node that sets scope of grouping
+     * @param valueId limit grouping to values under this ancestor value
+     * @param filterNodeIds only group values from the select nodes
+     * @param fingerprints node id and values that must match to be included in grouping
+     * @param sortByNodeId node for ordering the groupings
+     * @return
+     */
     @Override
     @Transactional
     public List<JqValue> getGroupedValues(Long nodeId, Long valueId, List<Long> filterNodeIds, Map<Long,JqValue> fingerprints, Long sortByNodeId) {
@@ -725,6 +827,7 @@ public class ValueService implements ValueServiceInterface {
      * @param nodeId
      * @return
      */
+    @Transactional
     public List<Value> getDescendantValues(long rootValueId,List<Long> nodeId) {
         if(nodeId.isEmpty()){
             return getAllDescendants(rootValueId);
@@ -751,7 +854,7 @@ public class ValueService implements ValueServiceInterface {
     /**
      * Returns detection node values that are descendants of the given root value.
      * Checks the in-memory detection cache first (populated by the
-     * ChangeDetectedEvent observer), then falls back to a DB query.
+     * ChangeEvent observer), then falls back to a DB query.
      *
      * @param rootValueId the root value ID (upload ID)
      * @return detection values as DTOs, or empty list if none found

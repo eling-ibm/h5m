@@ -17,10 +17,12 @@ import {
   Tile,
 } from '@carbon/react';
 import { FolderAdd, TrashCan } from '@carbon/icons-react';
-import { getDashboardSummariesOptions,deleteFolderMutation } from '@client/@tanstack/react-query.gen.ts';
+import { getDashboardSummariesOptions, getDashboardSummariesQueryKey, deleteFolderMutation, listFoldersQueryKey } from '@client/@tanstack/react-query.gen.ts';
 import { CreateFolderModal } from '@app/components/CreateFolderModal';
+import { AuthorizationContext } from '@app/context/AuthorizationContext.tsx';
+import { canModifyTeam } from '@app/context/usePermission.tsx';
 import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query';
-import { useState,Suspense } from 'react';
+import { useContext, useState,Suspense } from 'react';
 import {useNavigate } from 'react-router-dom';
 import { useNotification } from '@app/context/useNotification.tsx';
 import '@app/pages/DashboardPage.css';
@@ -93,11 +95,13 @@ const FolderTable = ({ summaries }: { summaries: FolderSummary[] }) => {
   const queryClient = useQueryClient();
   const [confirmFolder, setConfirmFolder] = useState<FolderSummary | null>(null);
   const notifications = useNotification();
+  const { isAdmin, teams } = useContext(AuthorizationContext);
 
   const deleteFolder = useMutation({
     ...deleteFolderMutation(),
     onSuccess: () => {
-      void queryClient.invalidateQueries();
+      void queryClient.invalidateQueries({ queryKey: listFoldersQueryKey() });
+      void queryClient.invalidateQueries({ queryKey: getDashboardSummariesQueryKey() });
       notifications.success(`Folder '${confirmFolder?.name}' deleted`);
       setConfirmFolder(null);
     },
@@ -125,6 +129,7 @@ const FolderTable = ({ summaries }: { summaries: FolderSummary[] }) => {
       <StructuredListBody>
         {summaries.map((summary) => {
           const status = folderStatus(summary);
+          const canModify = canModifyTeam(summary.teamId, isAdmin, teams);
           return (
             <StructuredListRow
               key={summary.id}
@@ -157,6 +162,7 @@ const FolderTable = ({ summaries }: { summaries: FolderSummary[] }) => {
                   hasIconOnly
                   renderIcon={TrashCan}
                   iconDescription="Delete folder"
+                  disabled={!canModify}
                   onClick={(e) => {
                     e.stopPropagation();
                     setConfirmFolder(summary);

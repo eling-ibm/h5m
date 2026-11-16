@@ -33,13 +33,13 @@
         <build.build-helper-maven-plugin>3.6.1</build.build-helper-maven-plugin>
         <build.buildnumber-maven-plugin>3.2.1</build.buildnumber-maven-plugin>
         <build.exec-maven-plugin>3.6.2</build.exec-maven-plugin>
-        <build.hugo-maven-plugin>0.2.12</build.hugo-maven-plugin>
         <build.jandex-maven-plugin>3.1.6</build.jandex-maven-plugin>
         <build.maven-compiler-plugin>3.14.0</build.maven-compiler-plugin>
         <build.maven-enforcer-plugin>3.6.2</build.maven-enforcer-plugin>
         <build.maven-failsafe-plugin>3.2.5</build.maven-failsafe-plugin>
         <build.maven-project-info-reports-plugin>3.9.0</build.maven-project-info-reports-plugin>
         <build.maven-release-plugin>3.1.1</build.maven-release-plugin>
+        <build.maven-resources-plugin>3.5.0</build.maven-resources-plugin>
         <build.maven-surefire-plugin>3.5.3</build.maven-surefire-plugin>
         <build.spotless-maven-plugin>3.3.0</build.spotless-maven-plugin>
         <build.versions-maven-plugin>2.21.0</build.versions-maven-plugin>
@@ -58,14 +58,13 @@
         <h5m.skip.hugo>false</h5m.skip.hugo>
 
         <!-- dependencies -->
+        <lib.antlr>4.13.2</lib.antlr>
         <lib.jdbi>3.41.3</lib.jdbi>
         <lib.jhunter>0.1.0</lib.jhunter>
-        <lib.jjq>0.1.9</lib.jjq>
+        <lib.jjq>0.1.11</lib.jjq>
         <lib.jmh>1.37</lib.jmh>
         <lib.mapstruct>1.6.3</lib.mapstruct>
         <lib.math3>3.6.1</lib.math3>
-
-        <lib.playwright>1.51.0</lib.playwright>
         <lib.yaup>0.9.11</lib.yaup>
 
         <!-- compiler -->
@@ -76,11 +75,13 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
         <!-- quarkiverse -->
+        <quarkiverse.goblin>1.0.1</quarkiverse.goblin>
         <quarkiverse.http-problem>3.38.2</quarkiverse.http-problem>
         <quarkiverse.jdbc-sqlite>3.0.11</quarkiverse.jdbc-sqlite>
         <quarkiverse.mapstruct>1.1.0</quarkiverse.mapstruct>
         <quarkiverse.oidc-proxy>0.7.0</quarkiverse.oidc-proxy>
         <quarkiverse.quinoa>2.8.1</quarkiverse.quinoa>
+        <quarkiverse.roq>2.1.8</quarkiverse.roq>
 
         <!-- quarkus -->
         <quarkus.graalvm.version>25.2.4</quarkus.graalvm.version>
@@ -88,7 +89,7 @@
         <quarkus.native.container-build>true</quarkus.native.container-build>
         <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
         <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
-        <quarkus.platform.version>3.38.2</quarkus.platform.version>
+        <quarkus.platform.version>3.39.1</quarkus.platform.version>
 
         <skipITs>true</skipITs>
 
@@ -159,6 +160,11 @@
             <version>${quarkiverse.quinoa}</version>
         </dependency>
         <dependency>
+            <groupId>io.quarkiverse.roq</groupId>
+            <artifactId>quarkus-roq-frontmatter</artifactId>
+            <version>${quarkiverse.roq}</version>
+        </dependency>
+        <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-aesh</artifactId>
         </dependency>
@@ -221,6 +227,11 @@
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-smallrye-openapi</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.antlr</groupId>
+            <artifactId>antlr4-runtime</artifactId>
+            <version>${lib.antlr}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.commons</groupId>
@@ -355,6 +366,24 @@
                         <id>make-index</id>
                         <goals>
                             <goal>jandex</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.antlr</groupId>
+                <artifactId>antlr4-maven-plugin</artifactId>
+                <version>${lib.antlr}</version>
+                <configuration>
+                    <sourceDirectory>${project.basedir}/src/main/java</sourceDirectory>
+                    <includes>
+                        <include>io/hyperfoil/tools/h5m/javascript/*.g4</include>
+                    </includes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>antlr4</goal>
                         </goals>
                     </execution>
                 </executions>
@@ -656,6 +685,16 @@
                     <artifactId>quarkus-oidc-proxy</artifactId>
                     <version>${quarkiverse.oidc-proxy}</version>
                 </dependency>
+                <dependency>
+                    <groupId>io.quarkiverse.roq</groupId>
+                    <artifactId>quarkus-roq</artifactId>
+                    <version>${quarkiverse.roq}</version>
+                </dependency>
+                <dependency>
+                    <groupId>io.quarkiverse.roq</groupId>
+                    <artifactId>quarkus-roq-generator</artifactId>
+                    <version>${quarkiverse.roq}</version>
+                </dependency>
             </dependencies>
             <build>
                 <plugins>
@@ -691,47 +730,47 @@
             <build>
                 <plugins>
                     <plugin>
-                        <groupId>org.codehaus.mojo</groupId>
-                        <artifactId>exec-maven-plugin</artifactId>
-                        <version>${build.exec-maven-plugin}</version>
+                        <artifactId>maven-resources-plugin</artifactId>
+                        <version>${build.maven-resources-plugin}</version>
                         <executions>
                             <execution>
-                                <id>docs-npm-install</id>
+                                <id>sync-roq-assets</id>
                                 <goals>
-                                    <goal>exec</goal>
+                                    <goal>copy-resources</goal>
                                 </goals>
-                                <phase>generate-resources</phase>
+                                <phase>package</phase>
                                 <configuration>
-                                    <executable>npm</executable>
-                                    <workingDirectory>${project.basedir}/docs/site</workingDirectory>
-                                    <arguments>
-                                        <argument>install</argument>
-                                    </arguments>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                    <plugin>
-                        <groupId>org.echocat.maven.plugins</groupId>
-                        <artifactId>hugo-maven-plugin</artifactId>
-                        <version>${build.hugo-maven-plugin}</version>
-                        <executions>
-                            <execution>
-                                <id>generate-hugo-site</id>
-                                <goals>
-                                    <goal>build</goal>
-                                </goals>
-                                <phase>generate-resources</phase>
-                                <configuration>
-                                    <workingDirectory>${project.basedir}/docs/site</workingDirectory>
-                                    <config>${project.basedir}/docs/site/hugo.toml</config>
-                                    <output>${project.basedir}/src/main/webui/public/site</output>
+                                    <outputDirectory>${project.build.directory}/roq</outputDirectory>
+                                    <resources>
+                                        <resource>
+                                            <directory>${project.build.directory}/quinoa/build</directory>
+                                            <includes>
+                                                <include>h5m-roq.*</include>
+                                                <include>assets/carbon-wc-*.js</include>
+                                                <include>assets/rolldown-*.js</include>
+                                                <include>assets/es-*.js</include>
+                                                <include>assets/*.woff2</include>
+                                            </includes>
+                                        </resource>
+                                    </resources>
                                 </configuration>
                             </execution>
                         </executions>
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+        <profile>
+            <!-- goblin is a dev-only chaos extension. run dev mode with -Pgoblin to get it -->
+            <id>goblin</id>
+            <dependencies>
+                <dependency>
+                    <groupId>io.quarkiverse.goblin</groupId>
+                    <artifactId>quarkus-goblin</artifactId>
+                    <version>${quarkiverse.goblin}</version>
+                    <scope>provided</scope>
+                </dependency>
+            </dependencies>
         </profile>
         <profile>
             <id>playwright</id>

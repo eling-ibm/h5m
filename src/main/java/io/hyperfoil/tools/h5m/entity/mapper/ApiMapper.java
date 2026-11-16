@@ -5,6 +5,8 @@ import io.hyperfoil.tools.h5m.entity.ApiKeyEntity;
 import io.hyperfoil.tools.h5m.entity.FolderEntity;
 import io.hyperfoil.tools.h5m.entity.NodeEntity;
 import io.hyperfoil.tools.h5m.entity.NodeGroupEntity;
+import io.hyperfoil.tools.h5m.entity.NotificationChannelEntity;
+import io.hyperfoil.tools.h5m.entity.NotificationEntity;
 import io.hyperfoil.tools.h5m.entity.TeamEntity;
 import io.hyperfoil.tools.h5m.entity.UserEntity;
 import io.hyperfoil.tools.h5m.entity.ValueEntity;
@@ -12,6 +14,8 @@ import io.hyperfoil.tools.h5m.entity.ViewEntity;
 import io.hyperfoil.tools.h5m.entity.ViewComponentEntity;
 
 import java.time.Instant;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.mapstruct.Context;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
@@ -21,6 +25,8 @@ import org.mapstruct.MappingConstants;
 public interface ApiMapper {
 
     @Mapping(target = "groupId", source = "group.id")
+    @Mapping(target = "teamId" ,  source = "team.id")
+    @Mapping(target = "teamName", source = "team.name")
     Folder toFolder(FolderEntity folder);
 
     @Mapping(target = "type", expression = "java(node.type())")
@@ -58,9 +64,32 @@ public interface ApiMapper {
         );
     }
 
+    /**
+     * Map a notification channel entity to its API representation.
+     * <p>
+     * {@code secret} is deliberately ignored — this {@code @Mapping(ignore = true)}
+     * is the single rule that guarantees the secret is never returned from the server.
+     * {@code config} is read as a typed object through the entity's {@code getConfig()} accessor.
+     */
+    @Mapping(target = "folderId", source = "folder.id")
+    @Mapping(target = "folderName", source = "folder.name")
+    @Mapping(target = "secret", ignore = true)
+    NotificationChannel toNotificationChannel(NotificationChannelEntity entity);
+
+    /**
+     * Map a sent-notification entity to its API/log representation.
+     * The channel may have been deleted, so {@code channelId}/{@code channelName} are null-safe.
+     */
+    @Mapping(target = "folderId", source = "folder.id")
+    @Mapping(target = "folderName", source = "folder.name")
+    @Mapping(target = "channelId", source = "channel.id")
+    @Mapping(target = "channelName", source = "channel.name")
+    Notification toNotification(NotificationEntity entity);
+
     default User toUser(UserEntity entity) {
         if (entity == null) return null;
-        return new User(entity.id, entity.username, entity.role);
+        Set<Long> teamIds = entity.teams.stream().map(team -> team.id).collect(Collectors.toSet());
+        return new User(entity.id, entity.username, entity.role, teamIds);
     }
 
     default Team toTeam(TeamEntity entity) {

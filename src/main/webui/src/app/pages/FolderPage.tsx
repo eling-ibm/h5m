@@ -1,11 +1,19 @@
 import type { Node as ApiNode } from '@client/types.gen.ts';
 
+import DetectionChart from '@app/components/chart/DetectionChart';
+import { CreateNodeModal } from '@app/components/CreateNodeModal';
 import { DataTab } from '@app/components/DataTab';
+import { DeleteNodeModal } from '@app/components/DeleteNodeModal';
+import { EditNodeModal } from '@app/components/EditNodeModal';
 import { NodeGraphVisualizer } from '@app/components/NodeGraphVisualizer';
-import { useState } from 'react';
+import { NotificationChannelPanel } from '@app/components/notification/NotificationChannelPanel';
+import { UploadTab } from '@app/components/Upload/UploadTab';
+import { useFolderPermission } from '@app/context/usePermission.tsx';
 import {
   Button,
+  Column,
   ErrorBoundary,
+  Grid,
   InlineLoading,
   InlineNotification,
   MenuButton,
@@ -25,16 +33,14 @@ import {
 } from '@carbon/react';
 import { byIdOptions, getRecalculationStatusOptions, listFoldersOptions } from '@client/@tanstack/react-query.gen.ts';
 import { useQuery, useSuspenseQuery } from '@tanstack/react-query';
+import { useState } from 'react';
 import { Suspense, useCallback, useEffect } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import '@app/pages/DashboardPage.css';
-import { CreateNodeModal } from '@app/components/CreateNodeModal';
-import { DeleteNodeModal } from '@app/components/DeleteNodeModal';
-import { EditNodeModal } from '@app/components/EditNodeModal';
-import  AddNotificationConfig  from '@app/components/Notification/AddNotificationConfig';
 
-const NodesTab = ({ groupId }: { groupId: number }) => {
+const NodesTab = ({ folderId, groupId }: { folderId: number; groupId: number }) => {
   const { data: nodeGroup } = useSuspenseQuery(byIdOptions({ path: { id: groupId } }));
+  const canModify = useFolderPermission(folderId);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [nodeToDelete, setNodeToDelete] = useState<ApiNode | null>(null);
   const [nodeToEdit, setNodeToEdit] = useState<ApiNode | null>(null);
@@ -48,35 +54,42 @@ const NodesTab = ({ groupId }: { groupId: number }) => {
 
   useEffect(() => {
     if (recalcStatus?.state === 'COMPLETED') {
-      const timer = setTimeout(() => setRecalculationId(null), 5000);
-      return () => clearTimeout(timer);
+      const timer = setTimeout(() => {
+        setRecalculationId(null);
+      }, 5000);
+      return () => {
+        clearTimeout(timer);
+      };
     }
   }, [recalcStatus?.state]);
 
   return (
     <>
       <Button
-          kind="primary"
-          size="md"
-          onClick={() => setIsCreateOpen(true)}
-          className="create-folder-btn"
-          style={{ margin: 'var(--cds-spacing-05)' }}>
-          Create Node
+        kind="primary"
+        size="md"
+        onClick={() => {
+          setIsCreateOpen(true);
+        }}
+        className="create-folder-btn"
+        disabled={!canModify}
+        style={{ margin: 'var(--cds-spacing-05)' }}
+      >
+        Create Node
       </Button>
       {recalcStatus?.state === 'RUNNING' && (
         <div style={{ margin: '0 var(--cds-spacing-05)' }}>
-          <InlineLoading
-            description={`Recalculating… ${recalcStatus.completed ?? 0}/${recalcStatus.total ?? 0} values`}
-            status="active"
-          />
+          <InlineLoading description={`Recalculating… ${String(recalcStatus.completed ?? 0)}/${String(recalcStatus.total ?? 0)} values`} status="active" />
         </div>
       )}
       {recalcStatus?.state === 'COMPLETED' && (
         <InlineNotification
           kind="success"
           title="Recalculation complete"
-          subtitle={`Finished in ${recalcStatus.durationMs ?? 0}ms`}
-          onClose={() => setRecalculationId(null)}
+          subtitle={`Finished in ${String(recalcStatus.durationMs ?? 0)}ms`}
+          onClose={() => {
+            setRecalculationId(null);
+          }}
           style={{ margin: '0 var(--cds-spacing-05)', maxWidth: 'none' }}
         />
       )}
@@ -85,13 +98,32 @@ const NodesTab = ({ groupId }: { groupId: number }) => {
           kind="error"
           title="Recalculation failed"
           subtitle={recalcStatus.error ?? 'Unknown error'}
-          onClose={() => setRecalculationId(null)}
+          onClose={() => {
+            setRecalculationId(null);
+          }}
           style={{ margin: '0 var(--cds-spacing-05)', maxWidth: 'none' }}
         />
       )}
-      <CreateNodeModal open={isCreateOpen} onClose={() => setIsCreateOpen(false)} groupId={groupId} />
-      <DeleteNodeModal node={nodeToDelete} onClose={() => setNodeToDelete(null)} />
-      <EditNodeModal node={nodeToEdit} onClose={() => setNodeToEdit(null)} onRecalculation={setRecalculationId} />
+      <CreateNodeModal
+        open={isCreateOpen}
+        onClose={() => {
+          setIsCreateOpen(false);
+        }}
+        groupId={groupId}
+      />
+      <DeleteNodeModal
+        node={nodeToDelete}
+        onClose={() => {
+          setNodeToDelete(null);
+        }}
+      />
+      <EditNodeModal
+        node={nodeToEdit}
+        onClose={() => {
+          setNodeToEdit(null);
+        }}
+        onRecalculation={setRecalculationId}
+      />
       {nodeGroup.sources?.length === 0 ? (
         <p style={{ margin: 'var(--cds-spacing-05)' }}>No nodes defined yet. Use the Create Node button above to get started.</p>
       ) : (
@@ -116,8 +148,21 @@ const NodesTab = ({ groupId }: { groupId: number }) => {
                 <StructuredListCell>{node.operation}</StructuredListCell>
                 <StructuredListCell>
                   <MenuButton label="Action" kind="ghost" size="sm" menuAlignment="bottom-end">
-                    <MenuItem label="Delete" kind="danger" onClick={() => setNodeToDelete(node)} />
-                    <MenuItem label="Edit" onClick={() => setNodeToEdit(node)} />
+                    <MenuItem
+                      label="Delete"
+                      kind="danger"
+                      disabled={!canModify}
+                      onClick={() => {
+                        setNodeToDelete(node);
+                      }}
+                    />
+                    <MenuItem
+                      label="Edit"
+                      disabled={!canModify}
+                      onClick={() => {
+                        setNodeToEdit(node);
+                      }}
+                    />
                   </MenuButton>
                 </StructuredListCell>
               </StructuredListRow>
@@ -134,22 +179,13 @@ const GraphVisualizer = ({ groupId }: { groupId: number }) => {
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   return (
     <>
-      <Button
-        kind="primary"
-        size="md"
-        onClick={() => setIsCreateOpen(true)}
-        className="create-folder-btn"
-        style={{ margin: 'var(--cds-spacing-05)' }}
-      >
-        Create Node
-      </Button>
       <CreateNodeModal open={isCreateOpen} onClose={() => setIsCreateOpen(false)} groupId={groupId} />
-      <NodeGraphVisualizer nodeGroup={nodeGroup} />
+      <NodeGraphVisualizer nodeGroup={nodeGroup} groupId={groupId} />
     </>
   );
 };
 
-const TAB_ANCHORS = ['data', 'nodes', 'graph','Notification'];
+const TAB_ANCHORS = ['data', 'upload', 'nodes', 'graph', 'notification', 'chart'];
 
 const FolderContent = ({ folderId }: { folderId: number }) => {
   const { data: folders } = useSuspenseQuery(listFoldersOptions());
@@ -157,9 +193,12 @@ const FolderContent = ({ folderId }: { folderId: number }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const selectedIndex = Math.max(0, TAB_ANCHORS.indexOf(location.hash.slice(1)));
-  const onTabChange = useCallback(({ selectedIndex: i }: { selectedIndex: number }) => {
-    void navigate({ hash: TAB_ANCHORS[i] }, { replace: true });
-  }, [navigate]);
+  const onTabChange = useCallback(
+    ({ selectedIndex: i }: { selectedIndex: number }) => {
+      void navigate({ hash: TAB_ANCHORS[i] }, { replace: true });
+    },
+    [navigate],
+  );
   if (!folder) {
     return <InlineLoading status="error" description="Folder not found" />;
   }
@@ -167,23 +206,32 @@ const FolderContent = ({ folderId }: { folderId: number }) => {
     <Tabs selectedIndex={selectedIndex} onChange={onTabChange}>
       <TabList aria-label="Folder tabs">
         <Tab>Data</Tab>
+        <Tab>Upload</Tab>
         <Tab>Nodes</Tab>
         <Tab>Graph</Tab>
         <Tab>Notification</Tab>
+        <Tab>Chart</Tab>
       </TabList>
       <TabPanels>
         <TabPanel>
-          {folder.id != null && folder.groupId != null ? (
-            <DataTab folderId={folder.id} groupId={folder.groupId} />
+          {folder.id != null && folder.groupId != null ? <DataTab folderId={folder.id} groupId={folder.groupId} /> : <p>Folder name not available</p>}
+        </TabPanel>
+        <TabPanel>
+          {folder.id != null ? (
+            <ErrorBoundary fallback={<InlineLoading status="error" description="Failed to load upload" />}>
+              <Suspense fallback={<SkeletonText paragraph={true} lineCount={5} />}>
+                <UploadTab folderId={folder.id} />
+              </Suspense>
+            </ErrorBoundary>
           ) : (
-            <p>Folder name not available</p>
+            <p>No uploads available</p>
           )}
         </TabPanel>
         <TabPanel>
-          {folder.groupId != null ? (
+          {folder.id != null && folder.groupId != null ? (
             <ErrorBoundary fallback={<InlineLoading status="error" description="Failed to load nodes" />}>
               <Suspense fallback={<SkeletonText paragraph={true} lineCount={5} />}>
-                <NodesTab groupId={folder.groupId} />
+                <NodesTab folderId={folder.id} groupId={folder.groupId} />
               </Suspense>
             </ErrorBoundary>
           ) : (
@@ -201,17 +249,34 @@ const FolderContent = ({ folderId }: { folderId: number }) => {
             <p>No node group associated with this folder</p>
           )}
         </TabPanel>
-       <TabPanel>
-         {folder.id != null ? (
-           <ErrorBoundary fallback={<InlineLoading status="error" description="Failed to load Notifications" />}>
-            <Suspense fallback={<SkeletonText paragraph={true} lineCount={5} />}>
-              <AddNotificationConfig folderId={folder.id} />
+        <TabPanel>
+          {folder.id != null ? (
+            <ErrorBoundary fallback={<InlineLoading status="error" description="Failed to load Notifications" />}>
+              <Grid fullWidth>
+                <Column lg={{ span: 6, offset: 5 }} md={{ span: 6, offset: 1 }} sm={4}>
+                  <Suspense fallback={<SkeletonText paragraph={true} lineCount={5} />}>
+                    <NotificationChannelPanel folderId={folder.id} />
+                  </Suspense>
+                </Column>
+              </Grid>
+            </ErrorBoundary>
+          ) : (
+            <p>No notification config associated with this folder</p>
+          )}
+        </TabPanel>
+        <TabPanel>
+          {folder.id != null && folder.groupId != null ? (
+            selectedIndex === TAB_ANCHORS.indexOf('chart') ? (
+              <ErrorBoundary fallback={<InlineLoading status="error" description="Failed to load chart" />}>
+                <Suspense fallback={<SkeletonText paragraph={true} lineCount={5} />}>
+                  <DetectionChart folderId={folder.id} groupId={folder.groupId} />
                 </Suspense>
-           </ErrorBoundary>
-                 ) : (
-                   <p>No notification config associated with this folder</p>
-                 )}
-               </TabPanel>
+              </ErrorBoundary>
+            ) : null
+          ) : (
+            <p>No detection associated with this folder</p>
+          )}
+        </TabPanel>
       </TabPanels>
     </Tabs>
   );

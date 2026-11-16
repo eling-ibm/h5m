@@ -57,15 +57,10 @@ public class FolderService implements FolderServiceInterface {
     ProcessingService processingService;
 
     @Inject
-    AuthorizationService authService;
-
-    @Inject
     ApiMapper apiMapper;
 
     @Inject
     NotificationService notificationService;
-
-
 
     @Override
     @Transactional
@@ -92,15 +87,15 @@ public class FolderService implements FolderServiceInterface {
     }
 
     @Transactional
-    public Folder create(String name, String teamName) {
-        TeamEntity team = TeamEntity.find("name", teamName).firstResult();
+    public Folder create(String name, Long teamId) {
+        TeamEntity team = TeamEntity.findById(teamId);
         if (team == null) {
-            throw new IllegalArgumentException("Team not found: " + teamName);
+            throw new NotFoundException("Team not found: " + teamId);
         }
         Folder folder = create(name);
         FolderEntity entity = FolderEntity.findById(folder.id());
         entity.team = team;
-        return folder;
+        return apiMapper.toFolder(entity);
     }
 
     @Transactional
@@ -126,7 +121,7 @@ public class FolderService implements FolderServiceInterface {
 
     /**
      * Returns dashboard summaries for all folders, including upload count,
-     * node count, change count, and timestamps of last upload and change.
+     * node count, change count, timestamps of last upload, change and team Id.
      */
     @Override
     @Transactional
@@ -140,7 +135,8 @@ public class FolderService implements FolderServiceInterface {
                 COUNT(DISTINCT n.id) AS node_count,
                 COUNT(DISTINCT dv.id) AS change_count,
                 MAX(rv.created_at) AS last_upload,
-                MAX(dv.created_at) AS last_change
+                MAX(dv.created_at) AS last_change,
+                f.team_id
             FROM folder f
             JOIN node_group g ON f.group_id = g.id
             JOIN node r ON r.id = g.root_id
@@ -148,12 +144,13 @@ public class FolderService implements FolderServiceInterface {
             LEFT JOIN node n ON n.group_id = g.id AND n.id != r.id
             LEFT JOIN node dn ON dn.group_id = g.id AND dn.type IN DETECTION_NODES
             LEFT JOIN value dv ON dv.node_id = dn.id
-            GROUP BY f.id, f.name
+            GROUP BY f.id, f.name, f.team_id
             ORDER BY f.name
             """.replaceAll("DETECTION_NODES", NodeService.DETECTION_NODES)).getResultList();
 
         List<FolderSummary> summaries = new ArrayList<>();
         for (Object[] row : rows) {
+            Long teamId = row[7] == null ? null : ((Number) row[7]).longValue();
             summaries.add(new FolderSummary(
                 ((Number) row[0]).longValue(),
                 (String) row[1],
@@ -161,7 +158,8 @@ public class FolderService implements FolderServiceInterface {
                 ((Number) row[3]).intValue(),
                 ((Number) row[4]).intValue(),
                 toLocalDateTime(row[5]),
-                toLocalDateTime(row[6])
+                toLocalDateTime(row[6]),
+                teamId
             ));
         }
         return summaries;
@@ -205,7 +203,7 @@ public class FolderService implements FolderServiceInterface {
         }
 
         valueService.deleteForFolder(id);
-        notificationService.deleteForFolder(id);
+        notificationService.deleteChannelsForFolder(id);
         processingService.deleteForFolder(id);
 
         em.createNativeQuery("DELETE FROM folder_view_component WHERE view_id IN (SELECT id FROM folder_view WHERE folder_id = :fid)")

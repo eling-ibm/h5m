@@ -6,9 +6,8 @@
   max-inline-size: 100%;
 }
 
-.page-grid.cds--grid {
-  margin-left: 0;
-  margin-right: 0;
+.cds--tag {
+  margin-inline: var(--cds-spacing-02); /* Carbon's default 0.125rem leaves tags cramped against text and each other */
 }
 
 .notification-container {

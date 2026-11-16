@@ -8,6 +8,7 @@ import io.hyperfoil.tools.h5m.api.Processing;
 import io.hyperfoil.tools.h5m.api.svc.FolderServiceInterface;
 import io.hyperfoil.tools.h5m.api.svc.ValueServiceInterface;
 import io.hyperfoil.tools.h5m.api.svc.ProcessingServiceInterface;
+import io.hyperfoil.tools.h5m.svc.AuthorizationService;
 import io.quarkus.runtime.configuration.MemorySize;
 import io.quarkus.security.Authenticated;
 import jakarta.annotation.security.PermitAll;
@@ -53,6 +54,9 @@ public class FolderResource {
     @Inject
     ProcessingServiceInterface processingService;
 
+    @Inject
+    AuthorizationService authorizationService;
+
     @GET
     @PermitAll
     @Operation(description = "Retrieve the list of all the folders")
@@ -89,6 +93,10 @@ public class FolderResource {
     @Authenticated
     @Operation(description = "Create a new folder")
     public Folder createFolder(@Valid @NotNull Folder folder) {
+        if (folder.teamId() != null) {
+            authorizationService.requireTeamMember(folder.teamId());
+            return folderService.create(folder.name(), folder.teamId());
+        }
         return folderService.create(folder.name());
     }
 
@@ -97,6 +105,7 @@ public class FolderResource {
     @Authenticated
     @Operation(description = "Delete a folder by its ID")
     public void deleteFolder(@PathParam("id") long id) {
+        authorizationService.requireFolderModify(id);
         folderService.delete(id);
     }
 
@@ -112,6 +121,8 @@ public class FolderResource {
             @RestForm("raw") String raw,
             @RestForm("url") URL url,
             @RestForm("file") FileUpload file) {
+
+        authorizationService.requireFolderModify(id);
 
         if (Stream.of(url, raw == null || raw.isBlank() ? null : raw, file).filter(Objects::nonNull).count() != 1) {
             throw new BadRequestException("Provide exactly one of 'file', 'raw', or 'url'");
